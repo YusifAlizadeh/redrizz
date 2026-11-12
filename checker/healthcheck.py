@@ -14,6 +14,7 @@ import socket
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config  # noqa: E402
+from utils.notify import notify  # noqa: E402
 
 
 def check_tcp(host, port):
@@ -41,7 +42,10 @@ def check_http(host, port):
         return False, str(e)
 
 
-def run_once():
+def run_once(state=None):
+    """Check every service once. If `state` (a dict) is passed, fire a
+    notification only when a service FLIPS up<->down, so you hear about an
+    SLA drop immediately without spam every cycle."""
     host = config.OUR_HOST
     allok = True
     for svc in config.SERVICES:
@@ -53,14 +57,21 @@ def run_once():
         allok &= ok
         mark = "UP  " if ok else "DOWN"
         print(f"[{mark}] {svc['name']:<10} {host}:{svc['port']:<6} {info}")
+        if state is not None:
+            prev = state.get(svc["name"])
+            if prev is not None and prev != ok:
+                notify(f"{'RECOVERED' if ok else 'SERVICE DOWN'}: "
+                       f"{svc['name']} {host}:{svc['port']} ({info})")
+            state[svc["name"]] = ok
     return allok
 
 
 if __name__ == "__main__":
     if "--watch" in sys.argv:
+        state = {}
         while True:
             print(f"--- {time.strftime('%H:%M:%S')} ---")
-            run_once()
+            run_once(state)
             time.sleep(15)
     else:
         sys.exit(0 if run_once() else 1)

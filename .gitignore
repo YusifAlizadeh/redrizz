@@ -1,5 +1,10 @@
+# runtime state (never commit)
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 logs/*.log
 steal/captured/*/
+steal/pcaps/
+exploits/stolen_*.py
 __pycache__/
 *.pyc

@@ -1,91 +1,227 @@
-# redrizz — Attack-Defense Red-Team Toolkit
+# redrizz — набор инструментов Red Team для Attack-Defense CTF
 
-Infrastructure for an A/D CTF. You don't pre-build exploits (you get the services
-at kickoff) — you pre-build the machine that **runs one exploit against every team
-and auto-submits the flags**. Write the exploit once, score everywhere.
+Этот репозиторий — **готовая инфраструктура** для атакующей стороны в соревновании
+формата **Attack-Defense (A/D)**. Ниже всё объяснено простыми словами: что это,
+зачем, и как этим пользоваться по шагам. Прочитайте один раз всей командой — вопросов
+не останется.
+
+---
+
+## 1. Что такое Attack-Defense и как тут побеждают
+
+В A/D каждой команде выдают одинаковый набор **уязвимых сервисов** (их крутят на вашей
+машине — «vulnbox»). Одновременно происходят две вещи:
+
+- **Атака.** В сервисах есть баги. Вы находите баг, пишете эксплойт и крадёте через него
+  **флаги** со *всех остальных команд* — у всех те же сервисы. За сданный флаг → очки.
+- **Защита.** Те же баги есть и у вас. Нужно их патчить, но так, чтобы сервис **не сломался**
+  — если ваш сервис не отвечает, вы теряете **SLA-очки**.
+
+Флаги **меняются каждый раунд** (обычно раз в 1–2 минуты) и **протухают** через несколько
+раундов. Поэтому побеждает не тот, кто написал один эксплойт, а тот, кто **быстро гоняет
+эксплойт по всем командам каждый раунд и мгновенно сдаёт флаги**. Ровно это делает redrizz.
+
+> **Важно (без иллюзий):** заранее собрать «готовые бинарники-эксплойты» невозможно — баги
+> живут в сервисах, которые вам дадут только на старте. Поэтому мы заранее готовим **машину**,
+> которая превращает один ваш эксплойт в флаги со всех команд за секунды. Это и есть то, что
+> реально выигрывает A/D.
+
+---
+
+## 2. Из чего состоит набор (карта репозитория)
 
 ```
-config.py        <- the ONLY file you edit on match day
-farm/            <- runs every exploit x every team each tick, submits flags
-exploits/        <- your exploits (+ templates to copy); farm auto-loads new ones
-steal/           <- sniff opponents' attacks on your box, replay them back
-checker/         <- SLA health of your own services
-utils/           <- target list + a local test service for offline practice
+redrizz/
+├── config.py          ← ЕДИНСТВЕННЫЙ файл, который вы правите на старте матча
+├── preflight.py       ← проверка «всё ли готово» перед запуском
+├── dashboard.py       ← живой экран состояния (кто патчит, что приносит флаги)
+├── run.sh             ← запускает всё разом в tmux
+├── farm/              ← «ферма»: мотор, который гоняет эксплойты и сдаёт флаги
+│   ├── server.py      ← главный цикл: каждый тик = все эксплойты × все команды
+│   ├── runner.py      ← запускает один эксплойт против одной команды (с таймаутом)
+│   ├── submitter.py   ← отправляет флаги на сервер жюри
+│   └── flagdb.py      ← база флагов (дедуп, статусы, срок жизни)
+├── exploits/          ← ВАШИ эксплойты (+ шаблоны для копирования)
+│   ├── template_pwn.py      ← заготовка pwn-эксплойта (pwntools)
+│   ├── template_web.py      ← заготовка web-эксплойта (requests)
+│   ├── template_crypto.py   ← заготовка crypto-эксплойта
+│   └── example_sploit.py    ← рабочий пример против тестового сервиса
+├── steal/             ← «кража» чужих эксплойтов из трафика
+│   ├── sniffer.py     ← ловит атаки по вам, сохраняет чужой эксплойт
+│   ├── replay.py      ← повторяет пойманную атаку по всем командам
+│   ├── record.sh      ← непрерывная запись трафика в pcap
+│   └── wrap.py        ← превращает пойманную атаку в фармящийся эксплойт
+├── checker/
+│   └── healthcheck.py ← следит, живы ли ВАШИ сервисы (SLA)
+└── utils/
+    ├── targets.py     ← список IP команд-соперников
+    ├── notify.py      ← уведомления (звонок/Telegram) при падении сервиса
+    └── testservice.py ← игрушечный уязвимый сервис для тренировки локально
 ```
 
-## 0. Setup (do this tonight)
+---
+
+## 3. Главная идея: «контракт эксплойта»
+
+Чтобы ферма могла запускать *любой* ваш эксплойт, они договариваются об одном простом правиле:
+
+> **Эксплойт — это скрипт, который запускают как `python эксплойт.py <IP>` и который
+> печатает найденные флаги в stdout, по одному в строке. Всё.**
+
+Ферма сама подставит IP каждой команды, сама запустит, сама вытащит флаги регуляркой из
+вывода и сама их сдаст. Вам нужно только написать логику «подключиться → вытащить флаг →
+`print(flag)`».
+
+---
+
+## 4. Установка (сделать заранее, вечером до матча)
 
 ```bash
-bash setup.sh                 # pwntools, requests, scapy, tcpdump
+bash setup.sh        # ставит pwntools, requests, scapy, rich, tcpdump
 ```
 
-## 1. Match-day config (fill config.py)
+---
 
-Edit the lines marked `<<< EDIT`:
-- `TEAM_TOKEN`, `OUR_TEAM_ID`
-- `FLAG_REGEX` — paste the real regex the second you see a flag
-- `TEAM_IP_PATTERN` + `TEAM_IDS` (or hand-fill `TEAMS`)
-- Submission block: set `SUBMIT_PROTO` (`http`/`tcp`), the URL/host, how the token
-  is sent, and the `ACCEPT_WORDS/REJECT_WORDS/RETRY_WORDS` to the game's wording
-- `SERVICES` — one entry per service you defend (name, port, kind)
+## 5. Порядок действий на матче (пошагово)
 
-Sanity check your target list:
+### Шаг 1. Заполнить `config.py`
+Это единственный файл, который вы правите. Ищите пометки `<<< EDIT`. Что именно вписать —
+см. раздел **6** ниже. Главное: токен команды, формат флага, IP соперников и как сдавать флаги.
+
+### Шаг 2. Проверить готовность
 ```bash
-python utils/targets.py
+python preflight.py
+```
+Скрипт проверит: токен вписан, регулярка флага компилируется, список команд не пустой,
+эксплойты на месте, зависимости стоят, **сервер сдачи доступен** (без отправки флагов).
+Красный `FAIL` = чинить до старта. Жёлтый `WARN` = можно жить.
+
+Когда увидите первый настоящий флаг — проверьте, что ваша регулярка его ловит:
+```bash
+python preflight.py --flag "ВОТ_НАСТОЯЩИЙ_ФЛАГ="
 ```
 
-## 2. Launch the farm
-
+### Шаг 3. Запустить всё
 ```bash
-python farm/server.py            # loops forever, one tick per TICK_SECONDS
-python farm/server.py --once     # single tick (testing)
+./run.sh
 ```
-The submitter runs inside it as a background thread. Watch the per-exploit flag
-counts to see which exploit is earning.
+Откроется tmux с панелями: **ферма**, **healthcheck** (SLA) и **дашборд**. Отцепиться от
+tmux — `Ctrl-b`, затем `d`. Вернуться — `tmux attach -t redrizz`.
 
-## 3. Add an exploit in 60 seconds
-
-1. Copy a template: `cp exploits/template_web.py exploits/webshop.py`
-2. Fill the `# TODO` with the bug. **Rule: print flags to stdout, one per line.**
-3. Test it alone: `python exploits/webshop.py 10.60.2.1`
-4. Drop it in `exploits/` — the farm picks it up on the next tick. No restart.
-
-## 4. Steal opponents' exploits (big points)
-
+Если tmux нет, запустите в трёх терминалах вручную:
 ```bash
-sudo python steal/sniffer.py              # watch your service ports
-python steal/replay.py --list             # what you've captured
-python steal/replay.py --latest webshop   # fire newest stolen attack at all teams
-```
-To farm a stolen attack continuously, wrap it as an exploit:
-```bash
-cat > exploits/stolen_webshop.py <<'PY'
-import os
-os.execvp("python", ["python", "steal/replay.py", "--latest", "webshop", "--target", __import__("sys").argv[1]])
-PY
+python farm/server.py              # ферма + авто-сдача
+python checker/healthcheck.py --watch
+python dashboard.py
 ```
 
-## 5. Defend your SLA
+### Шаг 4. Написать эксплойт (когда разобрали сервис)
+1. Скопировать подходящий шаблон:
+   ```bash
+   cp exploits/template_web.py exploits/shop.py
+   ```
+2. Вписать сам баг в месте, помеченном `# TODO`. **Правило: `print` каждого флага.**
+3. Проверить на одной команде:
+   ```bash
+   python exploits/shop.py 10.60.2.1
+   ```
+4. Положить файл в `exploits/` — **ферма подхватит его на следующем тике сама**, перезапуск
+   не нужен. На дашборде появится строка с этим эксплойтом и счётчиком флагов.
 
+### Шаг 5. Красть чужие эксплойты (жирный источник очков)
+Как только по вам кто-то отрабатывает баг — вы можете **поймать его атаку и повторить её по
+всем**:
 ```bash
-python checker/healthcheck.py --watch     # alerts if a patch broke a service
+sudo python steal/sniffer.py        # слушает порты ваших сервисов
+python steal/wrap.py shop           # превратить пойманную атаку в фармящийся эксплойт
 ```
+После `wrap.py` в `exploits/` появится `stolen_shop.py` — ферма начнёт гонять чужую атаку по
+всем командам автоматически. (Вручную: `python steal/replay.py --latest shop`.)
 
-## Offline dry-run (practice before kickoff)
+### Шаг 6. Следить за защитой
+Панель healthcheck уже показывает `UP/DOWN` по вашим сервисам и **звенит при падении**. Если
+после патча сервис стал `DOWN` — немедленно откатывайте патч, иначе теряете SLA.
+
+---
+
+## 6. `config.py` — разбор полей
+
+| Поле | Что это |
+|------|---------|
+| `TEAM_TOKEN` | Токен вашей команды для сдачи флагов. Берётся из правил. |
+| `OUR_TEAM_ID` | Номер вашей команды — чтобы не атаковать самих себя. |
+| `FLAG_REGEX` | Как выглядит флаг. По умолчанию `[A-Z0-9]{31}=`. Поправьте по первому реальному флагу. |
+| `TEAM_IP_PATTERN` + `TEAM_IDS` | Шаблон IP команд, напр. `10.60.{id}.1`, и диапазон номеров. Или впишите список вручную в `TEAMS`. |
+| `TICK_SECONDS` | Как часто гонять эксплойты по всем (обычно = длине раунда). |
+| `EXPLOIT_TIMEOUT` | Через сколько секунд убивать зависший эксплойт. |
+| `FARM_THREADS` | Сколько атак параллельно (эксплойт × команда). |
+| `FLAG_LIFETIME` | Сколько секунд флаг годен к сдаче. `0` = не протухает. Поставьте `раунды_жизни × длина_раунда`, когда узнаете. |
+| `FLAG_MAX_TRIES` | Сколько раз пытаться сдать один флаг, прежде чем бросить. |
+| `SUBMIT_PROTO` | Как сдавать: `"http"`, `"tcp"` или `"dryrun"` (не отправлять, только лог — для тестов). |
+| `SUBMIT_URL` / `SUBMIT_HOST:PORT` | Адрес сервера сдачи флагов. |
+| `SUBMIT_TOKEN_MODE`, `SUBMIT_BODY_MODE` | Как именно упакован запрос (заголовок/JSON/текст). Подгоняется под жюри. |
+| `ACCEPT_WORDS` / `REJECT_WORDS` / `RETRY_WORDS` | Слова в ответе сервера, по которым мы понимаем «принято / отклонено / повторить». Впишите точные формулировки жюри. |
+| `SERVICES` | Ваши сервисы (имя, порт, тип) — для sniffer и healthcheck. |
+| `OUR_HOST` | IP вашей vulnbox (для healthcheck). |
+| `NOTIFY` | Уведомления при падении SLA: `"bell"`, `"telegram"` или `"none"`. |
+
+---
+
+## 7. Как это работает внутри (чтобы не было «магии»)
+
+- **Ферма (`farm/server.py`).** Каждые `TICK_SECONDS` берёт все эксплойты из `exploits/`
+  (кроме `template_*`) и запускает их против каждого IP из списка команд — параллельно, в
+  `FARM_THREADS` потоков. Из вывода каждого эксплойта регуляркой достаёт флаги.
+- **База флагов (`farm/flagdb.py`).** Флаг — первичный ключ, поэтому один и тот же флаг,
+  пойманный дважды, не дублируется. У каждого флага статус: `QUEUED` (в очереди),
+  `ACCEPTED` (принят, очки!), `REJECTED` (отклонён), `RETRY` (временно, повторить),
+  `SKIPPED` (протух или исчерпал попытки).
+- **Отправщик (`farm/submitter.py`).** Фоном берёт флаги из очереди и шлёт на сервер жюри
+  батчами. **Свежие флаги сдаёт первыми** и **выбрасывает протухшие** — чтобы под лимитом
+  скорости не тратить сдачи на мёртвые флаги. Ответ сервера разбирает по `*_WORDS` из конфига.
+- **Дашборд (`dashboard.py`).** Только читает базу, ничего не ломает. Показывает: счётчики по
+  статусам, **процент принятых**, **сколько принято за последние 60 секунд**, разбивку по
+  эксплойтам (видно, какой эксплойт перестал приносить флаги = вас запатчили) и `UP/DOWN` по
+  вашим сервисам.
+- **Кража (`steal/`).** `sniffer.py` смотрит трафик на портах ваших сервисов; когда *из*
+  вашего сервиса уходит флаг — значит кто-то вас только что проэксплойтил, и мы сохраняем
+  **входящую атаку** (это и есть чужой эксплойт). `replay.py` повторяет её по всем командам.
+  `wrap.py` оборачивает её в обычный фармящийся эксплойт.
+- **Защита (`checker/healthcheck.py`).** Пингует ваши сервисы и **уведомляет только в момент
+  перехода** `UP↔DOWN` (без спама каждую секунду).
+
+---
+
+## 8. Потренироваться локально (без соперников)
+
+Всё можно прогнать «насухую» ещё до матча на игрушечном сервисе:
 
 ```bash
-# terminal 1 — fake vulnerable service
+# терминал 1 — поднять тестовый уязвимый сервис
 python utils/testservice.py 9001
 
-# edit config.py: TEAMS=["127.0.0.1"], SUBMIT_PROTO="dryrun"
-python farm/server.py --once              # should capture + "submit" a flag
+# в config.py: TEAMS = ["127.0.0.1"], SUBMIT_PROTO = "dryrun"
+python farm/server.py --once      # должен поймать флаг и "сдать" его (dryrun)
+python dashboard.py --once        # покажет принятый флаг и строку example_sploit
 ```
 
-## Troubleshooting
-- **No flags:** test the exploit standalone; check `FLAG_REGEX` matches a real flag.
-- **Flags rejected:** tune `ACCEPT/REJECT/RETRY_WORDS` to the server's exact replies.
-- **Farm slow:** raise `FARM_THREADS`, lower `EXPLOIT_TIMEOUT`.
-- **Sniffer empty:** run as root; confirm `SERVICES` ports and `CAPTURE_IFACE`.
+---
 
-*Scope: everything here targets only the team IPs in `config.py` — the competition
-network. Standard A/D-CTF infrastructure.*
+## 9. Что делать если…
+
+- **Флагов нет.** Запустите эксплойт отдельно: `python exploits/ваш.py <IP>`. Проверьте, что
+  `FLAG_REGEX` совпадает с реальным флагом (`preflight.py --flag ...`).
+- **Флаги отклоняются.** Подгоните `ACCEPT_WORDS/REJECT_WORDS/RETRY_WORDS` под точные ответы
+  сервера жюри.
+- **Ферма тормозит.** Увеличьте `FARM_THREADS`, уменьшите `EXPLOIT_TIMEOUT`.
+- **Sniffer ничего не ловит.** Запускайте от root, проверьте порты в `SERVICES` и
+  `CAPTURE_IFACE`.
+- **Ваш сервис `DOWN` после патча.** Немедленно откат — вы теряете SLA-очки.
+
+---
+
+## 10. Этика и рамки
+
+Весь инструментарий бьёт **только по IP команд из `config.py`** — то есть по игровой сети
+соревнования. Это стандартная инфраструктура A/D CTF, предназначенная для санкционированного
+соревнования между согласными участниками. Не используйте её вне игры.

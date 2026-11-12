@@ -120,7 +120,8 @@ def submit_batch(flags):
 
 
 def run_once(db):
-    """One flush: take a batch, submit, record results. Returns #accepted."""
+    """One flush: retire dead flags, take a batch, submit, record. Returns #accepted."""
+    db.reap(getattr(config, "FLAG_LIFETIME", 0), getattr(config, "FLAG_MAX_TRIES", 15))
     flags = db.take_submittable(config.SUBMIT_BATCH)
     if not flags:
         return 0

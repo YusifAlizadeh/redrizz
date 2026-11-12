@@ -36,6 +36,16 @@ EXPLOIT_TIMEOUT = 25      # hard kill an exploit after this many seconds
 FARM_THREADS = 32         # parallel (exploit x target) jobs
 
 # ---------------------------------------------------------------------------
+# Flag lifetime / submission robustness
+# ---------------------------------------------------------------------------
+# Flags in A-D expire after a few rounds. When the submit queue backs up (rate
+# limits), we submit NEWEST flags first and drop ones older than FLAG_LIFETIME
+# so we never waste submissions on dead flags.
+FLAG_LIFETIME = 0         # <<< EDIT seconds a flag stays submittable; 0 = never expire.
+                          #     Set to  flag_valid_rounds * round_seconds  once known.
+FLAG_MAX_TRIES = 15       # give up on a flag after this many submit attempts
+
+# ---------------------------------------------------------------------------
 # Flag submission
 # ---------------------------------------------------------------------------
 SUBMIT_PROTO = "http"     # "http" | "tcp" | "dryrun"
@@ -80,6 +90,13 @@ SERVICES = [
 ]
 OUR_HOST = "127.0.0.1"    # <<< EDIT  our own vulnbox IP (for healthcheck)
 CAPTURE_IFACE = None      # None = default iface; or e.g. "eth0" for the sniffer
+
+# ---------------------------------------------------------------------------
+# Notifications (healthcheck fires these on UP<->DOWN transitions only)
+# ---------------------------------------------------------------------------
+NOTIFY = "bell"           # "none" | "bell" | "telegram"
+TELEGRAM_TOKEN = ""       # bot token, if NOTIFY == "telegram"
+TELEGRAM_CHAT = ""        # chat id,   if NOTIFY == "telegram"
 
 # ---------------------------------------------------------------------------
 # Storage
